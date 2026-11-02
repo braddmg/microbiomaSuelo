@@ -1,0 +1,82 @@
+## Taxones de interés
+
+Búsqueda de potenciales patógenos y beneficiosos según la lista indicada para
+este análisis. Se busca primero la especie y luego el género. Los valores son el
+porcentaje de lecturas de cada muestra.
+
+```{r}
+ti <- res$interes
+alto_ti <- if (is.null(res$interes_plot)) 3 else microbiomaSuelo:::alto_taxones_interes(res$interes_plot)
+tabla_ti <- function(df) {
+  DT::datatable(df, rownames = FALSE,
+                options = list(dom = "t", paging = FALSE, scrollX = TRUE)) |>
+    DT::formatRound(ti$muestras, digits = 3)
+}
+sp_det <- ti$especies[ti$especies$Detectada, , drop = FALSE]
+gn_det <- ti$generos[ti$generos$Detectado, , drop = FALSE]
+```
+
+### Especies
+
+```{r, results="asis"}
+if (nrow(sp_det) == 0) cat("Ninguna especie de la lista fue detectada.\n")
+```
+
+```{r}
+if (nrow(sp_det) > 0) {
+  tabla_ti(sp_det[, c("Especie", "Clasificacion", "Funcion", "ASVs", ti$muestras)])
+}
+```
+
+```{r, results="asis"}
+if (any(!ti$especies$Detectada)) {
+  cat("\n**No detectadas:** ",
+      paste0("*", ti$especies$Especie[!ti$especies$Detectada], "*", collapse = ", "), ".\n", sep = "")
+}
+```
+
+### Géneros
+
+```{r}
+if (nrow(gn_det) > 0) {
+  tabla_ti(gn_det[, c("Genero", "Categoria", "Evidencia", "ASVs", "ASVs_con_especie",
+                      "Especies_detectadas", ti$muestras)])
+}
+```
+
+```{r, results="asis"}
+if (any(!ti$generos$Detectado)) {
+  cat("\n**Géneros no detectados:** ",
+      paste0("*", ti$generos$Genero[!ti$generos$Detectado], "*", collapse = ", "), ".\n", sep = "")
+}
+compuestos <- gn_det[gn_det$Nombre_en_base != gn_det$Genero, , drop = FALSE]
+if (nrow(compuestos) > 0) {
+  cat("\n**Nombres compuestos en la base:** ",
+      paste0(compuestos$Genero, " = ", compuestos$Nombre_en_base, collapse = "; "),
+      ". La abundancia incluye todos los géneros del grupo.\n", sep = "")
+}
+```
+
+### Abundancia por muestra
+
+```{r, fig.width=9, fig.height=alto_ti}
+if (!is.null(res$interes_plot)) res$interes_plot
+```
+
+Cada burbuja es un género o especie detectado en una muestra; su tamaño es el
+porcentaje de lecturas, en escala logarítmica. Sin burbuja, no se detectó.
+
+### Interpretación
+
+**Categoria**: *Potencial patógeno* o *Potencial beneficioso* si todas las
+especies del género en la lista son de esa clase; *No concluyente* si la lista
+incluye especies de ambas. **Evidencia**: *Especie listada* si alguna ASV se
+asignó a una especie de la lista; *Solo género* si no. La abundancia del género
+incluye todas sus ASVs, también las de sus especies listadas, por lo que no se
+debe sumar con la tabla de especies.
+
+Estos resultados son orientativos. La presencia de un género no implica la de
+una especie o cepa con esa función: dentro de un mismo género y especie hay
+cepas patógenas y no patógenas. Un amplicón corto rara vez resuelve la especie,
+así que "no detectada" no significa ausente. Las abundancias muy bajas pueden
+ser ruido de secuenciación. Para confirmar, use cultivo, qPCR o PCR específica.

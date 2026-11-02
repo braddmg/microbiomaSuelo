@@ -1,0 +1,36 @@
+Package: microbiomaSuelo
+Type: Package
+Title: Análisis de Amplicones 16S/ITS de Muestras de Suelo
+Version: 0.1.0
+Authors@R: person("Bradd", "Mendoza", email = "braddmg@gmail.com", role = c("aut", "cre"))
+Description: Flujo estandarizado para analizar amplicones 16S o ITS de
+    muestras de suelo ya ensamblados con FLASH (*.extendedFrags.fastq.gz).
+    Ejecuta DADA2 (filtrado, modelo de error, ASVs, quimeras), asigna
+    taxonomía, construye un objeto phyloseq y genera tablas, heatmaps,
+    diversidad alfa y beta, gráficos Krona por muestra y un reporte HTML.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1)
+Imports:
+    Biostrings,
+    dada2,
+    DT,
+    ggplot2 (>= 3.5.0),
+    grDevices,
+    grid,
+    htmltools,
+    knitr,
+    methods,
+    parallel,
+    pheatmap,
+    phyloseq,
+    RColorBrewer,
+    readr,
+    rmarkdown,
+    ShortRead,
+    stats,
+    utils,
+    vegan
+biocViews:
+RoxygenNote: 7.3.3

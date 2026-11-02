@@ -1,0 +1,239 @@
+---
+title: "Reporte de análisis de microbioma de suelo"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    self_contained: true
+params:
+  datos: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center", dpi = 110)
+res <- readRDS(params$datos)
+cfg <- res$config
+var <- cfg$variable_analisis
+
+# Imágenes PNG embebidas en el HTML.
+img <- function(path, ancho = "100%") {
+  if (is.null(path) || !file.exists(path)) return(htmltools::p(htmltools::em("Figura no disponible.")))
+  htmltools::img(src = knitr::image_uri(path), style = paste0("max-width:", ancho, ";"))
+}
+tabla <- function(df, ...) {
+  DT::datatable(df, rownames = FALSE, options = list(dom = "t", paging = FALSE, ...))
+}
+grupos <- table(res$metadata[[var]][res$metadata[[cfg$columna_id]] %in% res$tracking$SampleID])
+```
+
+## Resumen
+
+| | |
+|---|---|
+| **Marcador** | `r cfg$tipo_datos` |
+| **Muestras analizadas** | `r nrow(res$tracking)` |
+| **Variable de comparación** | `r var` (`r paste(names(grupos), " (n = ", grupos, ")", sep = "", collapse = ", ")`) |
+| **ASVs finales** | `r format(res$n_asv, big.mark = ",")` |
+| **Lecturas finales (total)** | `r format(sum(res$tracking$final), big.mark = ",")` |
+| **Base taxonómica** | `r basename(cfg$ruta_taxonomia)` |
+| **Primers buscados** | `r paste0("fwd ", cfg$primer_fwd, " / rev ", cfg$primer_rev)` |
+| **Fecha de análisis** | `r cfg$fecha_ejecucion` |
+
+Las lecturas corresponden a fragmentos ya extendidos con FLASH
+(`*.extendedFrags.fastq.gz`). Se infirieron variantes de secuencia
+(ASVs) con DADA2 v`r cfg$version_dada2` y la taxonomía se asignó con el
+clasificador bayesiano de DADA2 (bootstrap mínimo `r cfg$min_boot`).
+No se aplicó rarefacción: las abundancias se expresan como porcentaje de
+lecturas de cada muestra.
+
+## Control de calidad
+
+### Seguimiento de lecturas
+
+```{r}
+tr <- res$tracking
+names(tr) <- c("Muestra", "Entrada", "Filtradas", "Sin ruido", "Sin quimeras",
+               "Finales", "% retenido")[seq_along(tr)]
+tabla(tr) |> DT::formatRound(2:6, digits = 0, mark = ",")
+```
+
+**Filtradas**: lecturas que pasan el filtro de calidad (maxEE = `r cfg$max_ee`,
+largo mínimo = `r cfg$min_len` pb). **Sin quimeras**: tras eliminar quimeras
+(`r sprintf("%.1f", res$pct_quimeras)` % de las lecturas). **Finales**: tras
+descartar ASVs sin reino asignado`r if (cfg$tipo_datos == "16S") ", cloroplastos, mitocondrias y eucariotas"`
+y ASVs con menos de `r cfg$min_lecturas_asv` lecturas en total.
+
+### Remoción de primers
+
+```{r}
+if (!is.null(res$primers)) {
+  pr <- res$primers
+  names(pr) <- c("Muestra", "Lecturas", "% con primer fwd", "% con primer rev", "Recortado")
+  tabla(pr) |> DT::formatRound(2, digits = 0, mark = ",")
+}
+```
+
+Se buscó el primer forward al inicio y el reverse (complemento reverso) al
+final de cada fragmento, con hasta 2 diferencias. Si un primer aparece en
+menos del 5 % de las lecturas se asume que ya había sido removido y no se
+recorta.
+
+### Perfiles de calidad
+
+```{r}
+img(res$img_calidad)
+```
+
+La línea verde es la calidad media por posición; la naranja, los cuartiles.
+La línea roja indica la proporción de lecturas que alcanzan cada largo.
+
+## Composición taxonómica
+
+Porcentaje de ASVs con asignación en cada rango:
+
+```{r}
+cl <- res$clasificacion
+knitr::kable(t(sprintf("%.1f %%", cl)), col.names = names(cl), align = "c")
+```
+
+### Phylum
+
+```{r, fig.width=10, fig.height=5.5}
+res$composicion$Phylum
+```
+
+### Género
+
+```{r, fig.width=10, fig.height=6}
+res$composicion$Genus
+```
+
+"No clasificado" agrupa las lecturas sin asignación en ese rango; "Otros",
+al resto de taxones fuera del top.
+
+## Krona por muestra
+
+```{r, results="asis"}
+if (is.null(res$krona)) {
+  cat("No se generaron gráficos Krona.")
+} else {
+  k <- res$krona
+  k$Krona <- sprintf('<a href="05_Krona/%s" target="_blank">Abrir Krona &#8599;</a>', k$Archivo)
+  k$Grupo <- as.character(res$metadata[match(k$SampleID, res$metadata[[cfg$columna_id]]), var])
+  cat('<p>Haga clic en una muestra para abrir su Krona interactivo en una pestaña nueva. ',
+      'También puede <a href="05_Krona/todas_las_muestras.html" target="_blank">abrir el Krona ',
+      'combinado</a>, que permite cambiar de muestra con el selector de la izquierda.</p>')
+}
+```
+
+```{r}
+if (!is.null(res$krona)) {
+  DT::datatable(k[, c("SampleID", "Grupo", "Lecturas", "Krona")], rownames = FALSE,
+                escape = FALSE, colnames = c("Muestra", var, "Lecturas", ""),
+                options = list(dom = "t", paging = FALSE)) |>
+    DT::formatRound("Lecturas", digits = 0, mark = ",")
+}
+```
+
+> Los enlaces funcionan mientras `Reporte_final.html` y la carpeta `05_Krona`
+> se mantengan juntos. Si comparte el reporte, comparta la carpeta de
+> resultados completa (o un .zip de ella).
+
+## Heatmaps
+
+### Top 20 géneros
+
+```{r, fig.width=9, fig.height=7}
+if (!is.null(res$heatmaps$Genus)) grid::grid.draw(res$heatmaps$Genus$gtable)
+```
+
+### Top 20 especies
+
+```{r, fig.width=9, fig.height=7}
+if (!is.null(res$heatmaps$Species)) {
+  grid::grid.draw(res$heatmaps$Species$gtable)
+} else {
+  cat("No hay ASVs asignadas a nivel de especie.")
+}
+```
+
+Valores: porcentaje de lecturas totales de cada muestra. La asignación a
+nivel de especie con amplicones cortos es poco fiable y debe tomarse como
+orientativa.
+
+```{r, child = if (!is.null(res$interes)) system.file("rmarkdown", "taxones_interes.Rmd", package = "microbiomaSuelo")}
+```
+
+## Diversidad alfa
+
+```{r, fig.width=10, fig.height=4.5}
+res$alfa_plot
+```
+
+```{r}
+a <- res$alfa
+num <- vapply(a, is.numeric, logical(1))
+tabla(a) |> DT::formatRound(names(a)[num], digits = 2)
+```
+
+```{r, results="asis"}
+if (!is.null(res$alfa_test)) {
+  cat("\n**Prueba de Kruskal–Wallis por métrica** (p-valor por permutación, no por aproximación chi-cuadrado):\n\n")
+  print(knitr::kable(res$alfa_test, digits = 3))
+  if (any(res$alfa_test$metodo == "exacto")) {
+    n_g <- table(droplevels(factor(res$alfa[[var]])))
+    # Con grupos del mismo tamaño, intercambiar etiquetas da el mismo H.
+    p_min <- (1 + (n_g[1] == n_g[2])) / choose(sum(n_g), n_g[1])
+    cat("\n*Con ", paste(n_g, collapse = " vs "), " muestras el p-valor exacto mínimo posible es ",
+        signif(p_min, 2),
+        "; con tan pocas réplicas interprete la diferencia de forma descriptiva.*\n", sep = "")
+  }
+}
+```
+
+**Observed**: número de ASVs. **Shannon**: riqueza y equitatividad.
+**Simpson**: probabilidad de que dos lecturas al azar sean de ASVs distintas.
+Sin rarefacción, la riqueza observada depende de la profundidad de
+secuenciación (columna *Lecturas*).
+
+## Diversidad beta
+
+```{r, fig.width=8, fig.height=6}
+res$beta$plot
+```
+
+```{r, results="asis"}
+if (!is.null(res$beta$permanova)) {
+  cat("**PERMANOVA (Bray–Curtis):**\n\n")
+  print(knitr::kable(res$beta$permanova, digits = 3))
+  cat("\n\n**Homogeneidad de dispersión (betadisper):**\n\n")
+  print(knitr::kable(res$beta$dispersion, digits = 3))
+} else {
+  cat("PERMANOVA no ejecutada: se requieren al menos dos grupos y tres muestras.")
+}
+```
+
+PERMANOVA evalúa si la composición difiere entre grupos (R² = proporción de
+la variación explicada). Si la prueba de dispersión también es
+significativa, la diferencia puede deberse a variabilidad distinta dentro
+de los grupos y no solo a un cambio de composición.
+`r if (max(grupos) <= 3) "**Con tres réplicas por grupo, el número de permutaciones distintas es muy limitado y el p-valor mínimo alcanzable es aproximadamente 0.1; interprete los resultados como exploratorios.**"`
+
+## Archivos generados
+
+| Carpeta | Contenido |
+|---|---|
+| `01_Control_calidad/` | Seguimiento de lecturas, perfiles de calidad, modelo de error |
+| `02_DADA2/` | Lecturas filtradas, tabla de ASVs (`seqtab_nochim.rds`), largos de ASV |
+| `03_Taxonomia/` | Taxonomía por ASV |
+| `04_Abundancia/` | Abundancia relativa (%) por rango y gráficos de composición |
+| `05_Krona/` | Gráficos Krona interactivos |
+| `06_Heatmaps/` | Heatmaps y matrices usadas |
+| `07_Diversidad/` | Alfa, PCoA, PERMANOVA y dispersión |
+| `08_Tablas/` | Conteos y abundancia por ASV con taxonomía; secuencias FASTA |
+| `10_Taxones_interes/` | Abundancia de especies y géneros de interés (si se indicó una lista) |
+| `phyloseq_final.rds` | Objeto phyloseq para análisis adicionales en R |

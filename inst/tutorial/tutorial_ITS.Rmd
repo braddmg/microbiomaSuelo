@@ -1,0 +1,205 @@
+---
+title: "Análisis ITS (hongos) de suelo paso a paso"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+## 0. Datos y paquetes
+
+Guarde este archivo en la carpeta del proyecto: todas las rutas son relativas a ella.
+
+```{r}
+library(dada2)
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+
+# Colores de todas las figuras: Pastel1 y luego Pastel2, sin sus grises.
+pastel <- c(RColorBrewer::brewer.pal(9, "Pastel1")[-9], RColorBrewer::brewer.pal(8, "Pastel2")[-8])
+paleta <- function(n) if (n <= length(pastel)) pastel[seq_len(n)] else colorRampPalette(pastel)(n)
+
+carpeta  <- "Data ITS"
+metadata <- read.csv("mdata_ITS.csv")
+unite    <- "Databases/sh_general_release_19.02.2025.tgz"
+primer   <- "TCCGTAGGTGAACCTGCGG"   # ITS1
+```
+
+Cada muestra es un archivo `<ID>.extendedFrags.fastq.gz` (lecturas ya unidas con FLASH).
+
+```{r}
+archivos <- list.files(carpeta, pattern = "extendedFrags.fastq.gz$", full.names = TRUE)
+ids <- sub(".extendedFrags.fastq.gz", "", basename(archivos))
+metadata$SampleID <- sub(".extendedFrags", "", metadata$SampleID)
+rownames(metadata) <- metadata$SampleID
+ids
+```
+
+## 1. Calidad
+
+El largo de ITS varía entre especies de hongos (~150-300 pb), por eso nunca
+se trunca a un largo fijo.
+
+```{r, fig.width=10, fig.height=5}
+plotQualityProfile(archivos[1:2])
+```
+
+## 2. Remoción del primer
+
+Las lecturas ITS todavía traen el primer ITS1 al inicio. Se recorta y se
+descartan las pocas lecturas que no lo tienen.
+
+```{r}
+sin_primer <- file.path("sin_primer_ITS", paste0(ids, ".fastq.gz"))
+removePrimers(archivos, sin_primer, primer.fwd = primer, orient = TRUE)
+```
+
+## 3. Filtrado
+
+Se descartan lecturas con más de 2 errores esperados o de menos de 50 pb.
+
+```{r}
+filtrados <- file.path("filtrados_ITS", paste0(ids, ".fastq.gz"))
+names(filtrados) <- ids
+out <- filterAndTrim(sin_primer, filtrados, maxEE = 2, truncQ = 2, minLen = 50,
+                     rm.phix = TRUE, multithread = TRUE)
+out
+```
+
+## 4. Modelo de error y ASVs
+
+DADA2 aprende la tasa de errores de la secuenciación y la usa para separar
+las variantes reales (ASVs) de los errores. Es el paso más lento.
+
+```{r, cache=TRUE}
+err <- learnErrors(filtrados, multithread = TRUE)
+dd <- dada(filtrados, err = err, multithread = TRUE)
+```
+
+## 5. Tabla de ASVs y quimeras
+
+```{r, cache=TRUE}
+seqtab <- makeSequenceTable(dd)
+seqtab <- removeBimeraDenovo(seqtab, method = "consensus", multithread = TRUE)
+dim(seqtab)
+```
+
+Lecturas que quedan en cada paso:
+
+```{r}
+data.frame(entrada = out[, 1], filtradas = out[, 2], finales = rowSums(seqtab))
+```
+
+## 6. Taxonomía (UNITE)
+
+UNITE viene comprimido; se extrae el FASTA general (no el `_dev`).
+
+```{r}
+fasta <- grep("dynamic_[0-9.]+\\.fasta$", untar(unite, list = TRUE), value = TRUE)
+untar(unite, files = fasta, exdir = "Databases")
+```
+
+UNITE antepone el rango a cada nombre (`k__Fungi`, `p__Ascomycota`...); se quita.
+Los rangos sin nombre (`unidentified`, `Fusarium_sp`) pasan a `NA`.
+
+```{r, cache=TRUE}
+tax <- assignTaxonomy(seqtab, file.path("Databases", fasta), multithread = TRUE)
+tax <- gsub("^[a-z]__", "", tax)
+tax[grepl("^unidentified|_sp$", tax, ignore.case = TRUE)] <- NA
+```
+
+## 7. Objeto phyloseq
+
+Se eliminan las ASVs sin reino asignado y las que tienen menos de 5 lecturas
+sumando todas las muestras.
+
+```{r}
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows = FALSE),
+               tax_table(tax), sample_data(metadata))
+taxa_names(ps) <- paste0("ASV", seq_len(ntaxa(ps)))
+ps <- subset_taxa(ps, !is.na(Kingdom))
+ps <- prune_taxa(taxa_sums(ps) >= 5, ps)
+ps
+```
+
+## 8. Composición por phylum
+
+```{r, fig.width=9, fig.height=5}
+ps_rel <- transform_sample_counts(ps, function(x) 100 * x / sum(x))
+microbiomaSuelo::grafico_composicion(ps, "Phylum", "Tratamiento", top_n = 10)
+```
+
+## 9. Heatmap de los 20 géneros más abundantes
+
+```{r, fig.width=8, fig.height=7}
+ps_genus <- tax_glom(ps_rel, "Genus")
+top20 <- names(sort(taxa_sums(ps_genus), decreasing = TRUE))[1:20]
+mat <- t(as(otu_table(prune_taxa(top20, ps_genus)), "matrix"))
+rownames(mat) <- as.character(tax_table(ps_genus)[rownames(mat), "Genus"])
+grupos <- unique(metadata$Tratamiento)
+pheatmap::pheatmap(mat, display_numbers = TRUE, number_format = "%.1f",
+                   color = colorRampPalette(c("white", pastel[1]))(100),
+                   annotation_col = metadata["Tratamiento"],
+                   annotation_colors = list(Tratamiento = setNames(paleta(length(grupos)), grupos)))
+```
+
+## 10. Diversidad alfa
+
+```{r, fig.width=9, fig.height=4}
+plot_richness(ps, x = "Tratamiento", measures = c("Observed", "Shannon", "Simpson")) +
+  geom_boxplot(aes(fill = Tratamiento), alpha = 0.8) +
+  scale_fill_manual(values = pastel)
+```
+
+## 11. Diversidad beta
+
+```{r, fig.width=7, fig.height=5}
+ord <- ordinate(ps_rel, method = "PCoA", distance = "bray")
+plot_ordination(ps_rel, ord) +
+  geom_point(aes(fill = Tratamiento), shape = 21, size = 4, colour = "grey30") +
+  scale_fill_manual(values = pastel)
+```
+
+PERMANOVA (requiere al menos dos tratamientos):
+
+```{r}
+adonis2(phyloseq::distance(ps_rel, "bray") ~ Tratamiento,
+        data = data.frame(sample_data(ps_rel)))
+```
+
+## 12. Taxones de interés
+
+Se buscan potenciales patógenos y beneficiosos, primero por especie y luego por
+género. Un género es *No concluyente* si la lista incluye especies de ambas
+clases. La lista la da el usuario en un CSV
+(`taxones_interes.csv`, con las columnas `Grupo`, `Genero`, `Especie`,
+`Clasificacion` y `Funcion`). Si no hay lista, omita esta sección.
+
+```{r}
+interes <- microbiomaSuelo::taxones_interes(ps, "ITS", "Tratamiento", "taxones_interes.csv")
+interes$especies[interes$especies$Detectada, ]
+interes$generos[interes$generos$Detectado, ]
+```
+
+Cada burbuja es un taxón detectado en una muestra; su tamaño es el porcentaje de
+lecturas, en escala logarítmica. Sin burbuja, no se detectó.
+
+```{r, fig.width=9, fig.height=7}
+microbiomaSuelo::grafico_taxones_interes(interes)
+```
+
+Es orientativo: el género no indica la especie ni la cepa, y un amplicón corto
+rara vez resuelve la especie.
+
+## 13. Krona
+
+Un gráfico interactivo por muestra en la carpeta `Krona_ITS/`.
+
+```{r}
+microbiomaSuelo::crear_krona(ps, "Krona_ITS", "ITS")
+```
